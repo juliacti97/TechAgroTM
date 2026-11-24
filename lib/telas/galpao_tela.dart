@@ -188,7 +188,7 @@ class _GalpaoTelaState extends State<GalpaoTela> {
 
   void _abrirBluetooth() {
     Navigator.of(context).push(MaterialPageRoute(
-      builder: (_) => BluetoothTela(filtroSufixo: _ap?.sufixoBle, perfilAtual: _ap?.perfil),
+      builder: (_) => BluetoothTela(filtroSerie: _ap?.numeroSerie, perfilAtual: _ap?.perfil),
     ));
   }
 

@@ -2,10 +2,11 @@
 // aparelho_ble.dart - conversa com o Sentinela AgroTM S1 por Bluetooth
 //
 // Protocolo do firmware (TechAgroTM.ino, secao 4 BLUETOOTH):
-//   LEITURA (notify) JSON {"t","u","sit","msg","perfil","neb","itu"?}
+//   LEITURA (read/notify) JSON {"serie"?,"fw"?,"t","u","sit","msg","perfil","neb","itu"?}
 //   PERFIL  (write)  "corte_s1"            troca a criacao
 //   REDE    (write)  "NomeDaRede|senha"    configura o Wi-Fi
-//   NUVEM   (write)  "servidor|chave"      endereco da API e DEVICE_KEY
+//   NUVEM   (write)  "servidor|chave"      endereco da API (firmware 1.1+ e 2.0)
+// Funciona com as duas familias de UUID (veja BleUuids em config.dart).
 // =====================================================================
 
 import 'dart:async';
@@ -20,6 +21,7 @@ import '../core/formatos.dart';
 class LeituraBle {
   final double? temperatura, umidade, itu;
   final String situacao, mensagem, perfil;
+  final String? serie, firmware;
   final bool nebulizador;
   final DateTime em;
 
@@ -30,44 +32,70 @@ class LeituraBle {
         situacao = (j['sit'] ?? '').toString(),
         mensagem = (j['msg'] ?? '').toString(),
         perfil = (j['perfil'] ?? '').toString(),
+        serie = (j['serie'] ?? '').toString().isEmpty ? null : j['serie'].toString(),
+        firmware = j['fw']?.toString(),
         nebulizador = paraBool(j['neb']),
         em = DateTime.now();
 }
 
 class AparelhoBle {
-  static final Guid _servico = Guid(BleUuids.servico);
-  static final Guid _uLeitura = Guid(BleUuids.leitura);
-  static final Guid _uPerfil = Guid(BleUuids.perfil);
-  static final Guid _uRede = Guid(BleUuids.rede);
-  static final Guid _uNuvem = Guid(BleUuids.nuvem);
-
   BluetoothDevice? dispositivo;
   BluetoothCharacteristic? _leitura, _perfil, _rede, _nuvem;
   StreamSubscription<List<int>>? _subValor;
 
+  /// 'a6e07' (firmware 1.x) ou 'a6207' (firmware 2.0); null se desconectado.
+  String? familia;
+
   final StreamController<LeituraBle> _leituras = StreamController<LeituraBle>.broadcast();
   Stream<LeituraBle> get leituras => _leituras.stream;
 
+  /* ---------------- UUIDs ---------------- */
+
+  static final Map<int, Set<Guid>> _uuids = {
+    for (final n in [BleUuids.servico, BleUuids.leitura, BleUuids.perfil, BleUuids.rede, BleUuids.nuvem])
+      n: {for (final f in BleUuids.familias) Guid(BleUuids.uuid(f, n))},
+  };
+
+  static bool _eh(Guid g, int n) => _uuids[n]!.contains(g);
+
   /* ---------------- busca ---------------- */
 
-  /// Procura aparelhos TECH AGROTM por perto (pelo servico BLE deles).
-  static Future<void> procurar({Duration tempo = const Duration(seconds: 10)}) async {
+  /// Procura dispositivos Bluetooth por perto. Nao filtra pelo servico:
+  /// alguns celulares nao recebem o UUID no anuncio (o nome ocupa o espaco)
+  /// e entao o aparelho nunca aparecia. A tela filtra pelo nome.
+  static Future<void> procurar({Duration tempo = const Duration(seconds: 12)}) async {
     if (FlutterBluePlus.isScanningNow) await FlutterBluePlus.stopScan();
-    await FlutterBluePlus.startScan(withServices: [_servico], timeout: tempo);
+    await FlutterBluePlus.startScan(timeout: tempo);
   }
 
   static Future<void> pararBusca() => FlutterBluePlus.stopScan();
 
-  /// "AgroTM-A1B2C3" -> "A1B2C3" (fim do numero de serie)
+  /// E um aparelho TECH AGROTM? (pelo nome "AgroTM-..." ou pelo servico anunciado)
+  static bool ehTechAgro(ScanResult r) {
+    if (nomeDe(r).toUpperCase().startsWith('AGROTM')) return true;
+    return r.advertisementData.serviceUuids.any((g) => _eh(g, BleUuids.servico));
+  }
+
+  /// "AgroTM-TA1A2B" -> "TA1A2B" (6 caracteres do numero de serie)
   static String sufixoDe(ScanResult r) {
     final nome = nomeDe(r);
-    return nome.startsWith(prefixoNomeBle) ? nome.substring(prefixoNomeBle.length) : nome;
+    return nome.toUpperCase().startsWith(prefixoNomeBle.toUpperCase())
+        ? nome.substring(prefixoNomeBle.length)
+        : nome;
   }
 
   static String nomeDe(ScanResult r) {
     if (r.advertisementData.advName.isNotEmpty) return r.advertisementData.advName;
     if (r.device.platformName.isNotEmpty) return r.device.platformName;
     return r.device.remoteId.str;
+  }
+
+  /// O pedaco do nome Bluetooth combina com o numero de serie?
+  /// (firmware 1.x usa o comeco do numero; o 2.0, o fim)
+  static bool combina(String numeroSerie, String pedaco) {
+    final s = numeroSerie.trim().toUpperCase(), p = pedaco.trim().toUpperCase();
+    if (s.isEmpty || p.isEmpty) return false;
+    return s == p || s.startsWith(p) || s.endsWith(p);
   }
 
   /* ---------------- conexao ---------------- */
@@ -80,17 +108,18 @@ class AparelhoBle {
 
     final servicos = await d.discoverServices();
     for (final s in servicos) {
-      if (s.uuid != _servico) continue;
+      if (!_eh(s.uuid, BleUuids.servico)) continue;
+      familia = s.uuid.str128.toLowerCase().split('-').last.substring(0, 5);
       for (final c in s.characteristics) {
-        if (c.uuid == _uLeitura) _leitura = c;
-        if (c.uuid == _uPerfil) _perfil = c;
-        if (c.uuid == _uRede) _rede = c;
-        if (c.uuid == _uNuvem) _nuvem = c;
+        if (_eh(c.uuid, BleUuids.leitura)) _leitura = c;
+        if (_eh(c.uuid, BleUuids.perfil)) _perfil = c;
+        if (_eh(c.uuid, BleUuids.rede)) _rede = c;
+        if (_eh(c.uuid, BleUuids.nuvem)) _nuvem = c;
       }
     }
     if (_leitura == null || _rede == null) {
       await desconectar();
-      throw Exception('Este aparelho não parece ser um TECH AGROTM (serviço Bluetooth não encontrado).');
+      throw Exception('Este dispositivo não é um aparelho TECH AGROTM (serviço Bluetooth não encontrado).');
     }
 
     _subValor = _leitura!.onValueReceived.listen(_receber);
@@ -107,11 +136,19 @@ class AparelhoBle {
 
   bool get conectado => dispositivo?.isConnected ?? false;
 
+  /// O firmware aceita trocar o servidor pelo Bluetooth? (1.1+ e 2.0)
+  bool get temNuvem => _nuvem != null;
+
+  /// Firmware 1.x: o servidor e o endereco base (com a pasta, se houver).
+  /// Firmware 2.0: so o dominio (o caminho fica no config.h).
+  bool get servidorComPasta => familia == 'a6e07';
+
   Future<void> desconectar() async {
     await _subValor?.cancel();
     _subValor = null;
     final d = dispositivo;
     dispositivo = null;
+    familia = null;
     _leitura = _perfil = _rede = _nuvem = null;
     if (d != null) {
       try {
@@ -145,9 +182,13 @@ class AparelhoBle {
     return _escrever(_rede, '$rede|$senha');
   }
 
-  /// Endereco da API (so o dominio ou http://IP, sem o caminho) e a chave.
-  Future<void> enviarServidor(String servidor, String chave) =>
-      _escrever(_nuvem, chave.isEmpty ? servidor : '$servidor|$chave');
+  /// Endereco da API e a chave (DEVICE_KEY), se houver.
+  Future<void> enviarServidor(String servidor, String chave) {
+    if (_nuvem == null) {
+      throw Exception('Este firmware não aceita trocar o servidor pelo Bluetooth. Grave o firmware 1.1.');
+    }
+    return _escrever(_nuvem, chave.isEmpty ? servidor : '$servidor|$chave');
+  }
 
   /// Troca a criacao direto no aparelho (o servidor tambem deve ser avisado).
   Future<void> enviarCriacao(String perfilId) => _escrever(_perfil, perfilId);

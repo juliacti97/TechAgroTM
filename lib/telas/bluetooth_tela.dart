@@ -3,6 +3,8 @@
 // 1. procura os aparelhos TECH AGROTM por perto
 // 2. mostra a leitura em tempo real (direto do aparelho)
 // 3. envia o Wi-Fi, o endereco do servidor e a criacao
+// 4. mostra o numero de serie e cadastra o galpao na conta (se logado)
+// Funciona sem login (aberta pela tela de entrada): so nao mexe na conta.
 // Depois do Wi-Fi configurado, o aparelho manda as leituras para a API,
 // e elas aparecem no app e no site (mesmo banco).
 // =====================================================================
@@ -14,18 +16,20 @@ import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
 import '../ble/aparelho_ble.dart';
+import '../config.dart';
 import '../core/api.dart';
 import '../core/estado.dart';
 import '../core/formatos.dart';
 import '../core/modelos.dart';
 import '../core/situacoes.dart';
 import '../widgets/campos.dart';
+import 'adicionar_galpao_tela.dart';
 
 class BluetoothTela extends StatefulWidget {
-  const BluetoothTela({super.key, this.filtroSufixo, this.perfilAtual});
+  const BluetoothTela({super.key, this.filtroSerie, this.perfilAtual});
 
-  /// Quando aberta pelo galpao: so o aparelho que termina com este codigo.
-  final String? filtroSufixo;
+  /// Quando aberta pelo galpao: so o aparelho deste numero de serie.
+  final String? filtroSerie;
   final String? perfilAtual;
 
   @override
@@ -37,6 +41,8 @@ class _BluetoothTelaState extends State<BluetoothTela> {
   BluetoothAdapterState _adaptador = BluetoothAdapterState.unknown;
   List<ScanResult> _achados = [];
   bool _procurando = false;
+  bool _mostrarTodos = false;      // lista tambem dispositivos que nao sao TECH AGROTM
+  List<Aparelho> _minhaConta = []; // galpoes da conta (para achar o deste aparelho)
   bool _conectando = false;
   String? _nomeConectado;
   LeituraBle? _ultima;
@@ -50,7 +56,7 @@ class _BluetoothTelaState extends State<BluetoothTela> {
 
   final _rede = TextEditingController();
   final _senhaRede = TextEditingController();
-  late final TextEditingController _servidor = TextEditingController(text: _origemDoServidor());
+  final _servidor = TextEditingController();
   final _chave = TextEditingController();
   String? _perfil;
   List<Perfil> _perfis = [];
@@ -77,6 +83,34 @@ class _BluetoothTelaState extends State<BluetoothTela> {
     _subLeitura = _ble.leituras.listen((l) {
       if (mounted) setState(() => _ultima = l);
     });
+    _carregarConta();
+  }
+
+  bool get _logado => sessao.logado;
+
+  Future<void> _carregarConta() async {
+    if (!_logado) return;
+    try {
+      final l = await api.aparelhos();
+      if (mounted) setState(() => _minhaConta = l);
+    } catch (_) {}
+  }
+
+  /// Numero de serie do aparelho conectado: o firmware 1.1 manda no
+  /// Bluetooth; nos antigos, so temos o pedaco do nome ("AgroTM-XXXXXX").
+  String? get _serieConectada => _ultima?.serie;
+  String get _pedacoDoNome => (_nomeConectado ?? '').replaceFirst(RegExp(prefixoNomeBle, caseSensitive: false), '');
+
+  /// O galpao da conta que e este aparelho (ou null).
+  Aparelho? get _galpaoDaConta {
+    final serie = _serieConectada;
+    for (final ap in _minhaConta) {
+      if (serie != null ? ap.numeroSerie.toUpperCase() == serie.toUpperCase()
+                        : AparelhoBle.combina(ap.numeroSerie, _pedacoDoNome)) {
+        return ap;
+      }
+    }
+    return null;
   }
 
   @override
@@ -94,16 +128,23 @@ class _BluetoothTelaState extends State<BluetoothTela> {
     super.dispose();
   }
 
-  /// O firmware guarda so o "dominio" (ou http://IP); o caminho da API
-  /// (CAMINHO_API) fica gravado no proprio firmware.
-  static String _origemDoServidor() {
-    final uri = Uri.tryParse(sessao.servidor);
+  /// O que mandar ao aparelho como "servidor", a partir do endereco do app.
+  /// Firmware 1.x: endereco base com a pasta, ex. "https://x.onrender.com"
+  ///   ou "http://192.168.0.10/TechAgroTM-php" (ele completa com /api/v1/...).
+  /// Firmware 2.0: so o dominio (o caminho fica no config.h do firmware).
+  static String servidorParaAparelho(String enderecoApi, {required bool comPasta}) {
+    final uri = Uri.tryParse(enderecoApi);
     if (uri == null || uri.host.isEmpty) return '';
     final porta = uri.hasPort ? ':${uri.port}' : '';
-    return uri.scheme == 'https' ? '${uri.host}$porta' : 'http://${uri.host}$porta';
+    final origem = '${uri.scheme}://${uri.host}$porta';
+    if (!comPasta) return uri.scheme == 'https' ? '${uri.host}$porta' : origem;
+    // tira "/api/index.php" (ou "/api") do fim: sobra a pasta do projeto
+    var caminho = uri.path.replaceFirst(RegExp(r'/api(/index\.php)?/?$'), '');
+    while (caminho.endsWith('/')) {
+      caminho = caminho.substring(0, caminho.length - 1);
+    }
+    return '$origem$caminho';
   }
-
-  static String _caminhoDoServidor() => Uri.tryParse(sessao.servidor)?.path ?? '';
 
   Future<void> _procurar() async {
     setState(() {
@@ -134,7 +175,9 @@ class _BluetoothTelaState extends State<BluetoothTela> {
           });
         }
       });
+      _servidor.text = servidorParaAparelho(sessao.servidor, comPasta: _ble.servidorComPasta);
       if (mounted) setState(() => _nomeConectado = AparelhoBle.nomeDe(r));
+      _carregarConta();
     } catch (e) {
       if (mounted) setState(() => _erro = 'Não conectou: ${_textoErro(e)}');
     } finally {
@@ -171,7 +214,8 @@ class _BluetoothTelaState extends State<BluetoothTela> {
 
   void _enviarServidor() {
     final s = _servidor.text.trim();
-    if (s.isEmpty || s.length > 63) return avisar(context, 'Informe o servidor (até 63 caracteres).');
+    final max = _ble.servidorComPasta ? 96 : 63;
+    if (s.isEmpty || s.length > max) return avisar(context, 'Informe o servidor (até $max caracteres).');
     if (_chave.text.length > 47) return avisar(context, 'A chave pode ter até 47 caracteres.');
     _comando(() => _ble.enviarServidor(s, _chave.text.trim()), 'Servidor enviado ao aparelho.');
   }
@@ -181,13 +225,11 @@ class _BluetoothTelaState extends State<BluetoothTela> {
     final perfil = _perfil;
     if (perfil == null) return;
     await _comando(() => _ble.enviarCriacao(perfil), 'Criação enviada ao aparelho.');
-    final sufixo = (_nomeConectado ?? '').replaceFirst('AgroTM-', '');
+    final ap = _galpaoDaConta;
+    if (ap == null) return;   // sem login ou galpao ainda nao cadastrado
     try {
-      for (final ap in await api.aparelhos()) {
-        if (sufixo.isNotEmpty && ap.numeroSerie.toUpperCase().endsWith(sufixo.toUpperCase())) {
-          await api.trocarCriacao(ap.numeroSerie, perfil);
-        }
-      }
+      await api.trocarCriacao(ap.numeroSerie, perfil);
+      _carregarConta();
     } on ApiErro catch (e) {
       if (mounted) avisar(context, 'Aparelho trocou, mas o servidor não: ${e.mensagem}');
     }
@@ -246,20 +288,28 @@ class _BluetoothTelaState extends State<BluetoothTela> {
   }
 
   List<Widget> _lista() {
-    final filtro = widget.filtroSufixo?.toUpperCase();
-    final achados = filtro == null
-        ? _achados
-        : _achados.where((r) => AparelhoBle.sufixoDe(r).toUpperCase() == filtro).toList();
+    final filtro = widget.filtroSerie;
+    final achados = _achados.where((r) {
+      if (_mostrarTodos) return AparelhoBle.nomeDe(r) != r.device.remoteId.str || AparelhoBle.ehTechAgro(r);
+      if (!AparelhoBle.ehTechAgro(r)) return false;
+      return filtro == null || AparelhoBle.combina(filtro, AparelhoBle.sufixoDe(r));
+    }).toList()
+      ..sort((a, b) => b.rssi.compareTo(a.rssi));
     return [
       const Text(
-        'Fique perto do aparelho (até uns 10 metros). Ele aparece como "AgroTM-" seguido do final do número de série.',
+        'Fique perto do aparelho (até uns 10 metros). Ele aparece como "AgroTM-" seguido de 6 letras/números do número de série.',
         style: TextStyle(color: Cores.textoSuave),
       ),
+      if (Platform.isAndroid)
+        const Padding(
+          padding: EdgeInsets.only(top: 4),
+          child: Text('Android 11 ou mais antigo: deixe a Localização do celular ligada para a busca funcionar.',
+              style: TextStyle(color: Cores.textoSuave, fontSize: 12)),
+        ),
       if (filtro != null)
         Padding(
           padding: const EdgeInsets.only(top: 6),
-          child: Text('Procurando o aparelho que termina em $filtro.',
-              style: const TextStyle(fontWeight: FontWeight.w600)),
+          child: Text('Procurando o aparelho $filtro.', style: const TextStyle(fontWeight: FontWeight.w600)),
         ),
       const SizedBox(height: 12),
       FilledButton.icon(
@@ -270,13 +320,22 @@ class _BluetoothTelaState extends State<BluetoothTela> {
         label: Text(_procurando ? 'Procurando…' : 'Procurar aparelhos'),
       ),
       const SizedBox(height: 12),
+      SwitchListTile(
+        contentPadding: EdgeInsets.zero,
+        dense: true,
+        title: const Text('Mostrar todos os dispositivos Bluetooth'),
+        subtitle: const Text('Use se o aparelho não aparecer com o nome AgroTM.'),
+        value: _mostrarTodos,
+        onChanged: (v) => setState(() => _mostrarTodos = v),
+      ),
       if (!_procurando && achados.isEmpty)
-        const Text('Nenhum aparelho encontrado ainda. Confira se ele está ligado.',
+        const Text('Nenhum aparelho encontrado ainda. Confira se ele está ligado e se o Bluetooth do celular está ativo.',
             style: TextStyle(color: Cores.textoSuave)),
       for (final r in achados)
         Card(
           child: ListTile(
-            leading: const Icon(Icons.sensors, color: Cores.verde),
+            leading: Icon(AparelhoBle.ehTechAgro(r) ? Icons.sensors : Icons.bluetooth,
+                color: AparelhoBle.ehTechAgro(r) ? Cores.verde : Cores.textoSuave),
             title: Text(AparelhoBle.nomeDe(r), style: const TextStyle(fontWeight: FontWeight.w700)),
             subtitle: Text('Sinal ${r.rssi} dBm'),
             trailing: _conectando
@@ -292,8 +351,8 @@ class _BluetoothTelaState extends State<BluetoothTela> {
     final l = _ultima;
     final sit = l == null ? null : situacaoDe(l.situacao);
     final perfil = l == null ? null : perfilPorId(l.perfil);
-    final caminho = _caminhoDoServidor();
     final existePerfil = _perfis.any((p) => p.id == _perfil);
+    final galpao = _galpaoDaConta;
 
     return [
       // leitura ao vivo
@@ -323,6 +382,37 @@ class _BluetoothTelaState extends State<BluetoothTela> {
         ),
       ),
 
+      // numero de serie e conta
+      _cartao('Número de série', [
+        SelectableText(
+          _serieConectada ?? 'Começa com ${_pedacoDoNome.isEmpty ? '?' : _pedacoDoNome}…',
+          style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800, letterSpacing: 1),
+        ),
+        if (_serieConectada == null)
+          const Text(
+            'O número completo aparece na 4ª tela do visor (firmware 1.1) ou no Monitor Serial da Arduino IDE.',
+            style: TextStyle(fontSize: 12, color: Cores.textoSuave),
+          ),
+        const SizedBox(height: 8),
+        if (!_logado)
+          const Text('Entre na sua conta para ligar este aparelho a um galpão.',
+              style: TextStyle(color: Cores.textoSuave))
+        else if (galpao != null)
+          Text('Galpão "${galpao.nome}" da sua conta. As leituras aparecem no app e no site.',
+              style: const TextStyle(color: Cores.verde, fontWeight: FontWeight.w600))
+        else
+          FilledButton.icon(
+            icon: const Icon(Icons.add_home_work_outlined),
+            label: const Text('Cadastrar como galpão na minha conta'),
+            onPressed: () async {
+              await Navigator.push(context, MaterialPageRoute(
+                builder: (_) => AdicionarGalpaoTela(serieSugerida: _serieConectada ?? _pedacoDoNome),
+              ));
+              _carregarConta();
+            },
+          ),
+      ]),
+
       // Wi-Fi
       _cartao('Wi-Fi do galpão', [
         TextField(controller: _rede, decoration: const InputDecoration(labelText: 'Nome da rede (SSID)')),
@@ -334,9 +424,18 @@ class _BluetoothTelaState extends State<BluetoothTela> {
 
       // servidor
       _cartao('Servidor da API', [
+        if (!_ble.temNuvem)
+          const Text(
+            'O firmware deste aparelho não deixa trocar o servidor pelo Bluetooth: o endereço está fixo no código '
+            '(SERVIDOR_NUVEM). Grave o firmware 1.1 para configurar por aqui.',
+            style: TextStyle(fontSize: 12, color: Cores.alarme),
+          )
+        else ...[
         Text(
-          'O aparelho manda as leituras para este endereço. Ele usa o caminho gravado no firmware '
-          '(CAMINHO_API); o app usa "$caminho". Os dois precisam apontar para a mesma API.',
+          _ble.servidorComPasta
+              ? 'O aparelho manda as leituras para este endereço + "/api/v1/leituras". '
+                'Já vem preenchido com o mesmo servidor do app, para os dados irem para o mesmo banco.'
+              : 'Firmware 2.0: informe só o domínio (o caminho da API fica no config.h do firmware).',
           style: const TextStyle(fontSize: 12, color: Cores.textoSuave),
         ),
         const SizedBox(height: 10),
@@ -344,7 +443,7 @@ class _BluetoothTelaState extends State<BluetoothTela> {
           controller: _servidor,
           keyboardType: TextInputType.url,
           autocorrect: false,
-          decoration: const InputDecoration(labelText: 'Servidor', hintText: 'http://192.168.0.10 ou meusite.com.br'),
+          decoration: const InputDecoration(labelText: 'Servidor', hintText: 'https://meusite.onrender.com'),
         ),
         const SizedBox(height: 10),
         TextField(
@@ -354,6 +453,7 @@ class _BluetoothTelaState extends State<BluetoothTela> {
         ),
         const SizedBox(height: 10),
         OutlinedButton(onPressed: _enviarServidor, child: const Text('Enviar servidor ao aparelho')),
+        ],
       ]),
 
       // criacao
@@ -373,7 +473,7 @@ class _BluetoothTelaState extends State<BluetoothTela> {
         const SizedBox(height: 10),
         OutlinedButton(
           onPressed: _perfil == null ? null : _enviarCriacao,
-          child: const Text('Enviar criação (aparelho e conta)'),
+          child: Text(galpao != null ? 'Enviar criação (aparelho e conta)' : 'Enviar criação ao aparelho'),
         ),
       ]),
     ];

@@ -44,10 +44,11 @@ class Api {
 
     http.Response resposta;
     try {
-      final enviado = await _cliente.send(pedido).timeout(const Duration(seconds: 25));
+      final enviado = await _cliente.send(pedido).timeout(const Duration(seconds: 60));
       resposta = await http.Response.fromStream(enviado);
     } on TimeoutException {
-      throw ApiErro('O servidor demorou para responder. Tente de novo.');
+      // o Render gratis "dorme" e leva ~1 minuto para acordar no primeiro acesso
+      throw ApiErro('O servidor demorou para responder (no Render grátis ele pode estar acordando). Tente de novo.');
     } on http.ClientException {
       throw ApiErro('Sem conexão com o servidor. Confira a internet e o endereço do servidor.');
     }
@@ -135,6 +136,9 @@ class Api {
   }
 
   /* ---------------- criacoes e locais ---------------- */
+
+  /// GET /config: so para testar se o endereco do servidor esta certo.
+  Future<void> testarServidor() => _pedir('GET', '/config');
 
   Future<List<Perfil>> perfis() async =>
       _lista(await _pedir('GET', '/perfis')).map(Perfil.deJson).toList();

@@ -21,6 +21,7 @@ call flutter pub get || goto erro
 
 echo [3/4] Colando permissoes...
 call dart run tool/preparar.dart || goto erro
+call dart run flutter_launcher_icons || goto erro
 
 echo [4/4] Gerando o APK...
 if "%~1"=="" (

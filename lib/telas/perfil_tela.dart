@@ -2,6 +2,7 @@
 // perfil_tela.dart - Meu perfil (ver e editar; nao exclui a conta)
 // Regras iguais ao site: trocar e-mail ou senha pede a senha atual;
 // nova senha com confirmacao, 8+ caracteres, letra e numero.
+// "Meus galpoes": lista e apaga galpoes (igual ao perfil do site).
 // =====================================================================
 
 import 'package:flutter/material.dart';
@@ -23,6 +24,7 @@ class PerfilTela extends StatefulWidget {
 
 class _PerfilTelaState extends State<PerfilTela> {
   Conta? _conta;
+  List<Aparelho> _galpoes = [];
   String? _erro, _ok;
   bool _salvando = false;
 
@@ -48,7 +50,42 @@ class _PerfilTelaState extends State<PerfilTela> {
     super.dispose();
   }
 
+  Future<void> _carregarGalpoes() async {
+    try {
+      final l = await api.aparelhos();
+      if (mounted) setState(() => _galpoes = l);
+    } catch (_) {}
+  }
+
+  Future<void> _apagarGalpao(Aparelho ap) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Apagar galpão?'),
+        content: Text('"${ap.nome}" e todo o histórico de leituras e alertas dele serão apagados. '
+            'Isso não pode ser desfeito.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancelar')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Cores.alarme),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Apagar'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    try {
+      await api.desvincular(ap.numeroSerie);
+      if (mounted) avisar(context, 'Galpão apagado.');
+      _carregarGalpoes();
+    } on ApiErro catch (e) {
+      if (mounted) avisar(context, e.mensagem);
+    }
+  }
+
   Future<void> _carregar() async {
+    _carregarGalpoes();
     try {
       final c = await api.minhaConta();
       if (!mounted) return;
@@ -223,6 +260,32 @@ class _PerfilTelaState extends State<PerfilTela> {
                       ]),
                     ),
                   ),
+                const SizedBox(height: 12),
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      const Text('Meus galpões', style: TextStyle(fontWeight: FontWeight.w700)),
+                      const SizedBox(height: 4),
+                      if (_galpoes.isEmpty)
+                        const Text('Nenhum galpão cadastrado.', style: TextStyle(color: Cores.textoSuave)),
+                      for (final ap in _galpoes)
+                        ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: Text(ap.nome, style: const TextStyle(fontWeight: FontWeight.w600)),
+                          subtitle: Text(ap.numeroSerie, style: const TextStyle(fontSize: 12)),
+                          trailing: TextButton.icon(
+                            style: TextButton.styleFrom(foregroundColor: Cores.alarme),
+                            icon: const Icon(Icons.delete_outline),
+                            label: const Text('Apagar'),
+                            onPressed: () => _apagarGalpao(ap),
+                          ),
+                        ),
+                      const Text('Apagar remove também o histórico e os alertas do galpão.',
+                          style: TextStyle(fontSize: 12, color: Cores.textoSuave)),
+                    ]),
+                  ),
+                ),
               ],
             ),
     );

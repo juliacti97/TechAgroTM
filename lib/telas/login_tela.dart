@@ -11,6 +11,7 @@ import '../core/estado.dart';
 import '../core/situacoes.dart';
 import '../core/validacao.dart';
 import '../widgets/campos.dart';
+import 'bluetooth_tela.dart';
 
 class LoginTela extends StatefulWidget {
   const LoginTela({super.key});
@@ -22,6 +23,7 @@ class LoginTela extends StatefulWidget {
 class _LoginTelaState extends State<LoginTela> {
   bool _criar = false;
   bool _enviando = false;
+  bool _testando = false;
   String? _erro;
 
   final _nome = TextEditingController();
@@ -72,10 +74,27 @@ class _LoginTelaState extends State<LoginTela> {
       }
       // a sessao avisa o app, que troca para a tela inicial sozinho
     } on ApiErro catch (e) {
-      if (mounted) setState(() => _erro = e.mensagem);
+      final dica = e.status == 0 ? '\nConfira o servidor no ícone do canto superior direito.' : '';
+      if (mounted) setState(() => _erro = e.mensagem + dica);
     } finally {
       if (mounted) setState(() => _enviando = false);
     }
+  }
+
+  Future<void> _testarServidor() async {
+    setState(() => _testando = true);
+    try {
+      await api.testarServidor();
+      if (mounted) avisar(context, 'Servidor OK! Pode entrar.');
+    } on ApiErro catch (e) {
+      if (mounted) avisar(context, 'Servidor não respondeu: ${e.mensagem}');
+    } finally {
+      if (mounted) setState(() => _testando = false);
+    }
+  }
+
+  void _abrirBluetooth() {
+    Navigator.of(context).push(MaterialPageRoute(builder: (_) => const BluetoothTela()));
   }
 
   Future<void> _configurarServidor() async {
@@ -92,7 +111,7 @@ class _LoginTelaState extends State<LoginTela> {
               'Endereço da API do TECH AGROTM. Exemplos:\n'
               '• Emulador + XAMPP: http://10.0.2.2/TechAgroTM-php/api/index.php\n'
               '• Celular na mesma rede: http://192.168.0.10/TechAgroTM-php/api/index.php\n'
-              '• Internet: https://seu-site.onrender.com/api/index.php',
+              '• Internet (Render): https://seu-site.onrender.com/api/index.php',
               style: TextStyle(fontSize: 12, color: Cores.textoSuave),
             ),
             const SizedBox(height: 12),
@@ -117,7 +136,7 @@ class _LoginTelaState extends State<LoginTela> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('TECH AGROTM'),
+        title: Image.asset('assets/logo_claro.png', height: 26),
         actions: [
           IconButton(
             tooltip: 'Servidor da API',
@@ -130,6 +149,8 @@ class _LoginTelaState extends State<LoginTela> {
         child: ListView(
           padding: const EdgeInsets.all(20),
           children: [
+            Center(child: Image.asset('assets/logo_escuro.png', height: 64)),
+            const SizedBox(height: 20),
             Text(_criar ? 'Primeiro acesso' : 'Acompanhe seu galpão',
                 style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w800)),
             const SizedBox(height: 4),
@@ -224,10 +245,23 @@ class _LoginTelaState extends State<LoginTela> {
                   : Text(_criar ? 'Criar conta' : 'Entrar',
                       style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
             ),
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              style: OutlinedButton.styleFrom(minimumSize: const Size.fromHeight(46)),
+              icon: const Icon(Icons.bluetooth),
+              label: const Text('Configurar aparelho pelo Bluetooth'),
+              onPressed: _abrirBluetooth,
+            ),
             const SizedBox(height: 16),
             Text('Servidor: ${sessao.servidor}',
                 textAlign: TextAlign.center,
                 style: const TextStyle(fontSize: 11, color: Cores.textoSuave)),
+            Center(
+              child: TextButton(
+                onPressed: _testando ? null : _testarServidor,
+                child: Text(_testando ? 'Testando…' : 'Testar conexão com o servidor'),
+              ),
+            ),
           ],
         ),
       ),
