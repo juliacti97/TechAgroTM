@@ -1,0 +1,22 @@
+name: techagrotm_app
+description: Aplicativo do TECH AGROTM - monitoramento de galpões (usa a mesma API do site).
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.4.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  # chamadas para a API PHP (a mesma do site)
+  http: ^1.2.2
+  # guarda o login e o endereco do servidor no celular
+  shared_preferences: ^2.3.2
+  # Bluetooth (BLE) com o ESP32. Uso educacional: License.nonprofit (veja README)
+  flutter_blue_plus: ^2.3.0
+  # QR Code do Pix na tela de assinatura
+  qr_flutter: ^4.1.0
+
+flutter:
+  uses-material-design: true

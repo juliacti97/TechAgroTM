@@ -1,0 +1,23 @@
+<!--
+  Cole estas linhas em android/app/src/main/AndroidManifest.xml,
+  DENTRO de <manifest ...>, ANTES de <application ...>.
+-->
+<uses-permission android:name="android.permission.INTERNET" />
+
+<!-- Bluetooth no Android 12 ou mais novo (nao pede localizacao) -->
+<uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation" />
+<uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+
+<!-- Bluetooth no Android 11 ou mais antigo -->
+<uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+<uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30" />
+
+<!--
+  E na tag <application ...> acrescente o atributo abaixo, para o app
+  conseguir falar com o XAMPP / VM por http:// (sem https):
+
+  <application
+      android:usesCleartextTraffic="true"
+      ... >
+-->
