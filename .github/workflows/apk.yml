@@ -1,14 +1,10 @@
-# Gera o APK no GitHub, sem precisar do Flutter no PC.
-# Actions > "Gerar APK" > Run workflow. O APK sai em "Artifacts" no fim da execucao.
-# Servidor padrao do APK: variavel API_URL (Settings > Secrets and variables > Actions > Variables)
-# ou o campo preenchido ao rodar manualmente.
 name: Gerar APK
 
 on:
   workflow_dispatch:
     inputs:
       api_url:
-        description: 'Endereco da API (vazio = variavel API_URL ou o padrao do emulador)'
+        description: 'Endereco da API (vazio = Render: techagrotm-website.onrender.com)'
         required: false
   push:
     branches: [main]
@@ -40,6 +36,9 @@ jobs:
 
       - name: Permissoes
         run: dart run tool/preparar.dart
+
+      - name: Icone do app
+        run: dart run flutter_launcher_icons
 
       - name: Analisar codigo
         run: flutter analyze --no-fatal-infos --no-fatal-warnings
