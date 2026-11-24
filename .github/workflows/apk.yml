@@ -1,0 +1,60 @@
+# Gera o APK no GitHub, sem precisar do Flutter no PC.
+# Actions > "Gerar APK" > Run workflow. O APK sai em "Artifacts" no fim da execucao.
+# Servidor padrao do APK: variavel API_URL (Settings > Secrets and variables > Actions > Variables)
+# ou o campo preenchido ao rodar manualmente.
+name: Gerar APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      api_url:
+        description: 'Endereco da API (vazio = variavel API_URL ou o padrao do emulador)'
+        required: false
+  push:
+    branches: [main]
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Criar pastas android/ios
+        run: |
+          if [ ! -d android ]; then
+            flutter create --org br.com.techagrotm --project-name techagrotm_app --platforms android,ios .
+          fi
+
+      - name: Bibliotecas
+        run: flutter pub get
+
+      - name: Permissoes
+        run: dart run tool/preparar.dart
+
+      - name: Analisar codigo
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings
+
+      - name: Gerar APK
+        env:
+          API_URL: ${{ github.event.inputs.api_url || vars.API_URL }}
+        run: |
+          if [ -n "$API_URL" ]; then
+            flutter build apk --release --dart-define=API_URL="$API_URL"
+          else
+            flutter build apk --release
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TechAgroTM-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
