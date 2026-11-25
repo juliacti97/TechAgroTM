@@ -68,11 +68,11 @@ class AparelhoBle {
   /* ---------------- UUIDs ---------------- */
 
   static final Map<int, Set<Guid>> _uuids = {
-    for (final n in [BleUuids.servico, BleUuids.leitura, BleUuids.perfil, BleUuids.rede, BleUuids.nuvem])
+    for (final n in [BleUuids.servico, BleUuids.leitura, BleUuids.perfil, BleUuids.rede, BleUuids.nuvem, BleUuids.historico])
       n: {for (final f in BleUuids.familias) Guid(BleUuids.uuid(f, n))},
   };
 
-  static bool _eh(Guid g, int n) => _uuids[n]!.contains(g);
+  static bool _eh(Guid g, int n) => _uuids[n]?.contains(g) ?? false;
 
   /* ---------------- busca ---------------- */
 
