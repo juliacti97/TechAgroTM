@@ -7,6 +7,7 @@
 import 'package:flutter/material.dart';
 
 import '../core/api.dart';
+import '../core/estado.dart';
 import '../core/modelos.dart';
 import '../core/situacoes.dart';
 import '../widgets/campos.dart';
