@@ -19,13 +19,14 @@ const String servidorPadrao = String.fromEnvironment(
 /// Existem duas versoes de firmware, com UUIDs quase iguais:
 ///   - 1.x (o TechAgroTM.ino gravado no aparelho): ...-8000-a6e07000000N
 ///   - 2.0 (pasta firmware/ do site):                ...-8000-a6207000000N
-/// O app aceita as duas. N: 1 servico, 2 leitura, 3 perfil, 4 rede, 5 nuvem.
+/// O app aceita as duas. N: 1 servico, 2 leitura, 3 perfil, 4 rede, 5 nuvem,
+/// 6 historico (leituras guardadas sem internet; firmware 1.2+).
 class BleUuids {
   static const List<String> familias = ['a6e07', 'a6207'];
 
   static String uuid(String familia, int n) => 'a1b2c3d4-000$n-4000-8000-${familia}000000$n';
 
-  static const int servico = 1, leitura = 2, perfil = 3, rede = 4, nuvem = 5;
+  static const int servico = 1, leitura = 2, perfil = 3, rede = 4, nuvem = 5, historico = 6;
 }
 
 /// O aparelho se anuncia como "AgroTM-" + 6 caracteres do numero de serie

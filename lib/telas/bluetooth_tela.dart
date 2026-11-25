@@ -4,6 +4,8 @@
 // 2. mostra a leitura em tempo real (direto do aparelho)
 // 3. envia o Wi-Fi, o endereco do servidor e a criacao
 // 4. mostra o numero de serie e cadastra o galpao na conta (se logado)
+// 5. "ponte": se o aparelho esta sem internet (firmware 1.2+), busca as
+//    leituras guardadas nele e manda para o site pela internet do celular.
 // Funciona sem login (aberta pela tela de entrada): so nao mexe na conta.
 // Depois do Wi-Fi configurado, o aparelho manda as leituras para a API,
 // e elas aparecem no app e no site (mesmo banco).
@@ -43,6 +45,10 @@ class _BluetoothTelaState extends State<BluetoothTela> {
   bool _procurando = false;
   bool _mostrarTodos = false;      // lista tambem dispositivos que nao sao TECH AGROTM
   List<Aparelho> _minhaConta = []; // galpoes da conta (para achar o deste aparelho)
+  Timer? _timerPonte;
+  bool _repassando = false;
+  int _repassadas = 0;             // leituras enviadas ao site pelo celular nesta conexao
+  String? _statusPonte;
   bool _conectando = false;
   String? _nomeConectado;
   LeituraBle? _ultima;
@@ -120,6 +126,7 @@ class _BluetoothTelaState extends State<BluetoothTela> {
     _subProcurando?.cancel();
     _subLeitura?.cancel();
     _subConexao?.cancel();
+    _timerPonte?.cancel();
     AparelhoBle.pararBusca();
     _ble.fechar();
     for (final c in [_rede, _senhaRede, _servidor, _chave]) {
@@ -178,6 +185,13 @@ class _BluetoothTelaState extends State<BluetoothTela> {
       _servidor.text = servidorParaAparelho(sessao.servidor, comPasta: _ble.servidorComPasta);
       if (mounted) setState(() => _nomeConectado = AparelhoBle.nomeDe(r));
       _carregarConta();
+      _repassadas = 0;
+      _statusPonte = null;
+      _timerPonte?.cancel();
+      if (_ble.temHistorico) {
+        _repassarHistorico();
+        _timerPonte = Timer.periodic(const Duration(seconds: 20), (_) => _repassarHistorico());
+      }
     } catch (e) {
       if (mounted) setState(() => _erro = 'Não conectou: ${_textoErro(e)}');
     } finally {
@@ -185,7 +199,40 @@ class _BluetoothTelaState extends State<BluetoothTela> {
     }
   }
 
+  /// Ponte pelo celular: le as leituras guardadas no aparelho, manda para o
+  /// site (POST /leituras/lote) e so entao pede para o aparelho apagar.
+  /// Repete ate esvaziar. Roda a cada 20 s enquanto estiver conectado.
+  Future<void> _repassarHistorico() async {
+    if (_repassando || !_ble.conectado || !_ble.temHistorico) return;
+    _repassando = true;
+    try {
+      for (var voltas = 0; voltas < 120; voltas++) {
+        final h = await _ble.lerHistorico();
+        if (h == null || h.total == 0 || h.leituras.isEmpty) {
+          if (mounted) setState(() => _statusPonte = _repassadas > 0
+              ? 'Pronto: $_repassadas leituras guardadas foram enviadas ao site pelo celular.'
+              : null);
+          break;
+        }
+        if (mounted) setState(() => _statusPonte = 'Enviando ao site as leituras guardadas… faltam ${h.total}.');
+        await api.enviarLote(h.serie, h.perfil, h.leituras);
+        await _ble.confirmarHistorico(h.primeiraEpoch, h.leituras.length);
+        _repassadas += h.leituras.length;
+        await Future<void>.delayed(const Duration(milliseconds: 400));   // o aparelho atualiza a lista
+      }
+    } on ApiErro catch (e) {
+      if (mounted) setState(() => _statusPonte = e.status == 0
+          ? 'O celular também está sem internet. As leituras continuam guardadas no aparelho.'
+          : 'O site recusou as leituras: ${e.mensagem}');
+    } catch (_) {
+      // Bluetooth caiu no meio: tenta de novo na proxima volta
+    } finally {
+      _repassando = false;
+    }
+  }
+
   Future<void> _desconectar() async {
+    _timerPonte?.cancel();
     await _ble.desconectar();
     if (mounted) setState(() {
       _nomeConectado = null;
@@ -377,6 +424,16 @@ class _BluetoothTelaState extends State<BluetoothTela> {
               const SizedBox(height: 4),
               Text('Criação no aparelho: ${perfil?.nome ?? l.perfil}${l.nebulizador ? ' · nebulizador ligado' : ''}',
                   style: const TextStyle(fontSize: 12, color: Cores.textoSuave)),
+              if (l.rede != null) ...[
+                const SizedBox(height: 6),
+                Text(_textoRede(l), style: TextStyle(
+                    fontSize: 13, fontWeight: FontWeight.w600,
+                    color: l.rede == 'wifi' || l.rede == 'cabo' ? Cores.verde : Cores.alarme)),
+              ],
+            ],
+            if (_statusPonte != null) ...[
+              const SizedBox(height: 8),
+              Text(_statusPonte!, style: const TextStyle(fontSize: 13, color: Cores.frio, fontWeight: FontWeight.w600)),
             ],
           ]),
         ),
@@ -477,6 +534,21 @@ class _BluetoothTelaState extends State<BluetoothTela> {
         ),
       ]),
     ];
+  }
+
+  String _textoRede(LeituraBle l) {
+    final g = l.guardadas ?? 0;
+    final guardadas = g > 0 ? ' · $g leituras guardadas' : '';
+    switch (l.rede) {
+      case 'wifi':
+        return 'Aparelho online pelo Wi-Fi$guardadas';
+      case 'cabo':
+        return 'Aparelho online pelo cabo$guardadas';
+      case 'celular':
+        return 'Aparelho sem internet: este celular está enviando as leituras$guardadas';
+      default:
+        return 'Aparelho sem internet, tentando reconectar$guardadas';
+    }
   }
 
   Widget _cartao(String titulo, List<Widget> filhos) => Card(

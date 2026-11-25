@@ -87,9 +87,15 @@ O app funciona com as duas versões do firmware:
 | 3 | PERFIL | write | `corte_s1` |
 | 4 | REDE | write | `NomeDaRede|senha` |
 | 5 | NUVEM | write | `servidor` ou `servidor|chave` |
+| 6 | HISTORICO | read/write | lê `{"serie","perfil","total","agora","leituras":[{"e","t","u","s"}]}`; responde `ok:<e>:<n>` (1.2+) |
 
 A busca não filtra pelo serviço (alguns celulares não recebem o UUID no anúncio); a lista mostra quem
 tem nome `AgroTM-…`. Se não aparecer, ligue **Mostrar todos os dispositivos Bluetooth**.
+
+**Ponte pelo celular (firmware 1.2+):** com a aba **Aparelho** aberta e conectada, se o aparelho estiver sem
+internet o app busca as leituras guardadas nele (característica 6, HISTORICO) a cada 20 s, manda para o site
+(`POST /leituras/lote` com `conexao: bluetooth`) e só então pede para o aparelho apagar. Nada se perde se o
+celular também estiver sem internet: as leituras continuam no aparelho.
 
 Passo a passo de instalação de um aparelho novo:
 

@@ -6,6 +6,9 @@
 //   PERFIL  (write)  "corte_s1"            troca a criacao
 //   REDE    (write)  "NomeDaRede|senha"    configura o Wi-Fi
 //   NUVEM   (write)  "servidor|chave"      endereco da API (firmware 1.1+ e 2.0)
+//   HISTORICO (read/write, firmware 1.2+)  leituras guardadas sem internet:
+//     le {"serie","perfil","total","agora","leituras":[{"e","t","u","s"}]}
+//     e responde "ok:<e da 1a>:<quantas>" depois de mandar ao site.
 // Funciona com as duas familias de UUID (veja BleUuids em config.dart).
 // =====================================================================
 
@@ -22,6 +25,8 @@ class LeituraBle {
   final double? temperatura, umidade, itu;
   final String situacao, mensagem, perfil;
   final String? serie, firmware;
+  final String? rede;      // por onde o aparelho envia: wifi, cabo, celular, nenhuma (1.2+)
+  final int? guardadas;    // leituras esperando conexao (1.2+)
   final bool nebulizador;
   final DateTime em;
 
@@ -34,13 +39,24 @@ class LeituraBle {
         perfil = (j['perfil'] ?? '').toString(),
         serie = (j['serie'] ?? '').toString().isEmpty ? null : j['serie'].toString(),
         firmware = j['fw']?.toString(),
+        rede = j['rede']?.toString(),
+        guardadas = (j['guardadas'] as num?)?.toInt(),
         nebulizador = paraBool(j['neb']),
         em = DateTime.now();
 }
 
+/// Um pedaco do historico guardado no aparelho (ate 8 leituras).
+class HistoricoBle {
+  final String serie, perfil;
+  final int total;
+  final List<Map<String, dynamic>> leituras;   // ja no formato do POST /leituras/lote
+  final int primeiraEpoch;
+  HistoricoBle(this.serie, this.perfil, this.total, this.leituras, this.primeiraEpoch);
+}
+
 class AparelhoBle {
   BluetoothDevice? dispositivo;
-  BluetoothCharacteristic? _leitura, _perfil, _rede, _nuvem;
+  BluetoothCharacteristic? _leitura, _perfil, _rede, _nuvem, _historico;
   StreamSubscription<List<int>>? _subValor;
 
   /// 'a6e07' (firmware 1.x) ou 'a6207' (firmware 2.0); null se desconectado.
@@ -115,6 +131,7 @@ class AparelhoBle {
         if (_eh(c.uuid, BleUuids.perfil)) _perfil = c;
         if (_eh(c.uuid, BleUuids.rede)) _rede = c;
         if (_eh(c.uuid, BleUuids.nuvem)) _nuvem = c;
+        if (_eh(c.uuid, BleUuids.historico)) _historico = c;
       }
     }
     if (_leitura == null || _rede == null) {
@@ -136,6 +153,38 @@ class AparelhoBle {
 
   bool get conectado => dispositivo?.isConnected ?? false;
 
+  /// O firmware guarda leituras para o celular buscar? (1.2+)
+  bool get temHistorico => _historico != null;
+
+  /// Le o proximo pedaco do historico. "atras_s" e calculado aqui com o
+  /// relogio do aparelho ("agora" - "e"), mais o tempo ate o envio.
+  Future<HistoricoBle?> lerHistorico() async {
+    final c = _historico;
+    if (c == null || !conectado) return null;
+    final j = jsonDecode(utf8.decode(await c.read()));
+    if (j is! Map<String, dynamic>) return null;
+    final agora = (j['agora'] as num?)?.toInt() ?? 0;
+    final lista = <Map<String, dynamic>>[];
+    var primeira = -1;
+    for (final l in (j['leituras'] as List? ?? const [])) {
+      if (l is! Map) continue;
+      final e = (l['e'] as num?)?.toInt() ?? agora;
+      if (primeira < 0) primeira = e;
+      lista.add({
+        'temperatura': l['t'],
+        'umidade': l['u'],
+        'situacao': (l['s'] ?? 'conforto').toString(),
+        'atras_s': (agora - e).clamp(0, 7 * 24 * 3600),
+      });
+    }
+    return HistoricoBle((j['serie'] ?? '').toString(), (j['perfil'] ?? '').toString(),
+        (j['total'] as num?)?.toInt() ?? 0, lista, primeira);
+  }
+
+  /// Avisa o aparelho que estas leituras ja estao no site (ele apaga).
+  Future<void> confirmarHistorico(int primeiraEpoch, int quantas) =>
+      _escrever(_historico, 'ok:$primeiraEpoch:$quantas');
+
   /// O firmware aceita trocar o servidor pelo Bluetooth? (1.1+ e 2.0)
   bool get temNuvem => _nuvem != null;
 
@@ -149,7 +198,7 @@ class AparelhoBle {
     final d = dispositivo;
     dispositivo = null;
     familia = null;
-    _leitura = _perfil = _rede = _nuvem = null;
+    _leitura = _perfil = _rede = _nuvem = _historico = null;
     if (d != null) {
       try {
         await d.disconnect();

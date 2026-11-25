@@ -137,6 +137,14 @@ class Api {
 
   /* ---------------- criacoes e locais ---------------- */
 
+  /// POST /leituras/lote: leituras que o celular buscou no aparelho pelo
+  /// Bluetooth (o aparelho estava sem internet). Nao precisa de login.
+  Future<int> enviarLote(String serie, String perfil, List<Map<String, dynamic>> leituras) async {
+    final r = await _pedir('POST', '/leituras/lote',
+        corpo: {'serie': serie, 'perfil': perfil, 'conexao': 'bluetooth', 'leituras': leituras});
+    return (r is Map && r['gravadas'] is num) ? (r['gravadas'] as num).toInt() : leituras.length;
+  }
+
   /// GET /config: so para testar se o endereco do servidor esta certo.
   Future<void> testarServidor() => _pedir('GET', '/config');
 

@@ -285,7 +285,7 @@ class _GalpaoTelaState extends State<GalpaoTela> {
             f != null ? 'Faixa ${numero(f.uMin, 0)}–${numero(f.uMax, 0)} %' : '', Cores.grafite),
       ]),
       Row(children: [
-        ind('Situação', sit?.texto ?? 'Sem leituras', ap.online ? 'Aparelho online' : 'Aparelho sem sinal', corSit),
+        ind('Situação', sit?.texto ?? 'Sem leituras', ap.textoConexao, corSit),
         ind('Última leitura', ap.registradoEm != null ? haQuanto(ap.registradoEm!) : '—',
             ap.registradoEm != null ? diaHora(ap.registradoEm!) : '', Cores.grafite),
       ]),

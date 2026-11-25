@@ -32,7 +32,7 @@ class Perfil {
 /// Galpao / aparelho (GET /aparelhos), com a leitura mais recente.
 class Aparelho {
   final String numeroSerie, apelido, perfil;
-  final String? localNome, situacao;
+  final String? localNome, situacao, conexao;
   final double? temperatura, umidade, itu;
   final DateTime? registradoEm;
   final bool online, perfilPendente, temLocal;
@@ -44,6 +44,7 @@ class Aparelho {
         perfil = (j['perfil'] ?? '').toString(),
         localNome = j['local_nome']?.toString(),
         situacao = j['situacao']?.toString(),
+        conexao = j['conexao']?.toString(),
         temperatura = paraDouble(j['temperatura']),
         umidade = paraDouble(j['umidade']),
         itu = paraDouble(j['itu']),
@@ -55,6 +56,20 @@ class Aparelho {
 
   String get nome => apelido.isNotEmpty ? apelido : numeroSerie;
   bool get temLeitura => temperatura != null;
+
+  /// Texto do estado da conexao (igual ao site).
+  String get textoConexao {
+    const vias = {
+      'wifi': 'pelo Wi-Fi',
+      'cabo': 'pelo cabo de rede',
+      'bluetooth': 'pelo celular (Bluetooth)',
+      'lote': 'leituras recuperadas após queda de internet',
+    };
+    final via = vias[conexao];
+    if (online) return via == null ? 'Aparelho online' : 'Aparelho online · $via';
+    if (registradoEm == null) return 'Aguardando a primeira leitura';
+    return 'Sem sinal. O aparelho guarda as leituras e envia quando a conexão voltar.';
+  }
 
   /// Os 6 ultimos caracteres do numero de serie: e o que aparece no nome
   /// Bluetooth do aparelho ("AgroTM-XXXXXX").
