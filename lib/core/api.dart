@@ -196,8 +196,19 @@ class Api {
           .map(Leitura.deJson)
           .toList();
 
-  Future<List<Alerta>> alertas() async =>
-      _lista(await _pedir('GET', '/alertas')).map(Alerta.deJson).toList();
+  /// Alertas: os 100 mais recentes ou, com [de]/[ate], os de um periodo
+  /// (tela Alertas, por dia). [serie] filtra um galpao.
+  Future<List<Alerta>> alertas({DateTime? de, DateTime? ate, String? serie, int? limite}) async {
+    final consulta = <String, String>{
+      if (de != null) 'de': '${de.millisecondsSinceEpoch ~/ 1000}',
+      if (ate != null) 'ate': '${ate.millisecondsSinceEpoch ~/ 1000}',
+      if (serie != null && serie.isNotEmpty) 'serie': serie,
+      if (limite != null) 'limite': '$limite',
+    };
+    return _lista(await _pedir('GET', '/alertas', consulta: consulta.isEmpty ? null : consulta))
+        .map(Alerta.deJson)
+        .toList();
+  }
 
   /// GET /clima/{serie}. Erros com codigo "sem_local" / "sem_chave" sao esperados.
   Future<Map<String, dynamic>> clima(String serie) async =>

@@ -105,6 +105,12 @@ Passo a passo de instalação de um aparelho novo:
 4. Confira o **servidor** (já vem igual ao do app) e envie. Firmware 1.1: o aparelho completa com `/api/v1/leituras`.
 5. Em até 1 minuto a leitura aparece no app **e** no site.
 
+## Aba Alertas (sino)
+
+Calendário do mês (cor = alerta mais grave do dia, número = quantidade), alertas do dia escolhido e filtro
+por galpão. Na tela do galpão ficam só os 10 últimos, numa caixa com barra de rolagem. As cores de alertas
+e de "Situação" são as mesmas do site (`paletas` em `core/situacoes.dart`).
+
 ## Estrutura
 
 ```

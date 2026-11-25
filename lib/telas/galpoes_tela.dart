@@ -115,7 +115,9 @@ class _CartaoGalpao extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final sit = ap.temLeitura ? situacaoDe(ap.situacao) : null;
-    final cor = sit == null ? Cores.borda : corNivel(sit.nivel);
+    // mesmas cores dos alertas do site (sem sinal: cinza)
+    final pal = sit == null ? null : paletaDe(ap.online ? (ap.situacao ?? 'conforto') : 'sem_sinal');
+    final cor = pal?.borda ?? Cores.borda;
     final perfil = perfilPorId(ap.perfil);
 
     return Card(
@@ -158,7 +160,8 @@ class _CartaoGalpao extends StatelessWidget {
                       sit == null
                           ? 'Ligue o aparelho e configure o Wi-Fi pela aba Aparelho.'
                           : '${sit.texto}${ap.registradoEm != null ? ' · ${haQuanto(ap.registradoEm!)}' : ''}',
-                      style: TextStyle(fontSize: 13, color: sit == null ? Cores.textoSuave : cor),
+                      style: TextStyle(fontSize: 13, color: pal?.texto ?? Cores.textoSuave,
+                          fontWeight: pal == null ? FontWeight.normal : FontWeight.w700),
                     ),
                   ],
                 ),

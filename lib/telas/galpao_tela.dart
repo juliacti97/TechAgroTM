@@ -13,6 +13,7 @@ import '../core/formatos.dart';
 import '../core/modelos.dart';
 import '../core/situacoes.dart';
 import '../widgets/campos.dart';
+import '../widgets/item_alerta.dart';
 import '../widgets/grafico_linha.dart';
 import 'bluetooth_tela.dart';
 import 'seletor_cidade.dart';
@@ -29,6 +30,7 @@ class _GalpaoTelaState extends State<GalpaoTela> {
   Aparelho? _ap;
   List<Leitura> _leituras = [];
   List<Alerta> _alertas = [];
+  final _rolagemAlertas = ScrollController();
   List<Perfil> _perfis = [];
   Map<String, dynamic>? _clima;
   ApiErro? _erroClima;
@@ -46,6 +48,7 @@ class _GalpaoTelaState extends State<GalpaoTela> {
   @override
   void dispose() {
     _relogio?.cancel();
+    _rolagemAlertas.dispose();
     super.dispose();
   }
 
@@ -67,7 +70,7 @@ class _GalpaoTelaState extends State<GalpaoTela> {
         if (mounted) setState(() => _erro = 'Este galpão não está mais na sua conta.');
         return;
       }
-      final resultados = await Future.wait([api.leituras(widget.serie, _horas), api.alertas()]);
+      final resultados = await Future.wait([api.leituras(widget.serie, _horas), api.alertas(serie: widget.serie, limite: 10)]);
       if (!mounted) return;
       setState(() {
         _ap = ap;
@@ -232,7 +235,7 @@ class _GalpaoTelaState extends State<GalpaoTela> {
                   _cartao('Criação monitorada', _seletorCriacao(ap)),
                   _cartao('Temperatura no galpão', _graficos(ap)),
                   _cartao('Clima lá fora', _blocoClima()),
-                  _cartao('Alertas recentes', _listaAlertas()),
+                  _cartao('Últimos alertas', _listaAlertas()),
                 ],
               ),
             ),
@@ -254,12 +257,18 @@ class _GalpaoTelaState extends State<GalpaoTela> {
   Widget _indicadores(Aparelho ap) {
     final f = ap.faixa ?? perfilPorId(ap.perfil);
     final sit = ap.temLeitura ? situacaoDe(ap.situacao) : null;
-    final corSit = sit == null ? Cores.textoSuave : (ap.online ? corNivel(sit.nivel) : Cores.alarme);
+    // Situacao com as mesmas cores dos alertas (sem sinal: cinza)
+    final pal = sit == null ? null : paletaDe(ap.online ? (ap.situacao ?? 'conforto') : 'sem_sinal');
+    final corSit = pal?.texto ?? Cores.textoSuave;
 
-    Widget ind(String rotulo, String valor, String sub, Color cor) => Expanded(
+    Widget ind(String rotulo, String valor, String sub, Color cor, {Paleta? paleta}) => Expanded(
           child: Card(
             margin: const EdgeInsets.all(4),
-            child: Padding(
+            clipBehavior: Clip.antiAlias,
+            color: paleta?.fundo,
+            child: Container(
+              decoration: paleta == null ? null : BoxDecoration(border: Border(left: BorderSide(color: paleta.borda, width: 4))),
+              child: Padding(
               padding: const EdgeInsets.all(12),
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 Text(rotulo, style: const TextStyle(fontSize: 12, color: Cores.textoSuave)),
@@ -267,6 +276,7 @@ class _GalpaoTelaState extends State<GalpaoTela> {
                 Text(valor, style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: cor)),
                 Text(sub, style: const TextStyle(fontSize: 11, color: Cores.textoSuave)),
               ]),
+            ),
             ),
           ),
         );
@@ -285,7 +295,7 @@ class _GalpaoTelaState extends State<GalpaoTela> {
             f != null ? 'Faixa ${numero(f.uMin, 0)}–${numero(f.uMax, 0)} %' : '', Cores.grafite),
       ]),
       Row(children: [
-        ind('Situação', sit?.texto ?? 'Sem leituras', ap.textoConexao, corSit),
+        ind('Situação', sit?.texto ?? 'Sem leituras', ap.textoConexao, corSit, paleta: pal),
         ind('Última leitura', ap.registradoEm != null ? haQuanto(ap.registradoEm!) : '—',
             ap.registradoEm != null ? diaHora(ap.registradoEm!) : '', Cores.grafite),
       ]),
@@ -438,33 +448,35 @@ class _GalpaoTelaState extends State<GalpaoTela> {
     ]);
   }
 
+  /// Os 10 ultimos alertas, compactos, numa caixa com barra de rolagem.
+  /// O historico completo, por dia, fica na aba Alertas (sino).
   Widget _listaAlertas() {
     if (_alertas.isEmpty) {
-      return const Text('Nenhum alerta recente.', style: TextStyle(color: Cores.textoSuave));
+      return const Text('Nenhum alerta. Tudo certo por aqui.', style: TextStyle(color: Cores.textoSuave));
     }
-    return Column(children: [
-      for (final al in _alertas.take(20))
-        Container(
-          width: double.infinity,
-          margin: const EdgeInsets.only(bottom: 6),
-          padding: const EdgeInsets.all(10),
-          decoration: BoxDecoration(
-            color: const Color(0xFFF1F0EC),
-            border: Border(left: BorderSide(color: corNivel(situacaoDe(al.situacao).nivel), width: 4)),
+    final lista = _alertas.take(10).toList();
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      ConstrainedBox(
+        constraints: const BoxConstraints(maxHeight: 250),
+        child: Scrollbar(
+          controller: _rolagemAlertas,
+          thumbVisibility: true,
+          child: ListView.builder(
+            controller: _rolagemAlertas,
+            shrinkWrap: true,
+            padding: const EdgeInsets.only(right: 10),
+            itemCount: lista.length,
+            itemBuilder: (_, i) => ItemAlerta(lista[i]),
           ),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Row(children: [
-              Expanded(
-                child: Text(situacaoDe(al.situacao).texto,
-                    style: TextStyle(fontWeight: FontWeight.w700, color: corNivel(situacaoDe(al.situacao).nivel))),
-              ),
-              if (al.em != null)
-                Text(diaHora(al.em!), style: const TextStyle(fontSize: 12, color: Cores.textoSuave)),
-            ]),
-            const SizedBox(height: 2),
-            Text(al.mensagem, style: const TextStyle(fontSize: 13, color: Cores.textoSuave)),
-          ]),
         ),
+      ),
+      const SizedBox(height: 6),
+      Text(
+        lista.length > 3 ? 'Role para ver os ${lista.length} últimos. Todos os alertas ficam na aba Alertas (sino).'
+                         : 'Todos os alertas ficam na aba Alertas (sino).',
+        style: const TextStyle(fontSize: 11.5, color: Cores.textoSuave),
+      ),
     ]);
   }
+
 }
