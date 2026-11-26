@@ -19,6 +19,7 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
 import '../ble/aparelho_ble.dart';
 import '../config.dart';
+import '../core/config_aparelhos.dart';
 import '../core/api.dart';
 import '../core/estado.dart';
 import '../core/formatos.dart';
@@ -66,6 +67,9 @@ class _BluetoothTelaState extends State<BluetoothTela> {
   final _chave = TextEditingController();
   String? _perfil;
   List<Perfil> _perfis = [];
+  Map<String, dynamic>? _noAparelho;   // o que esta gravado no aparelho (firmware 1.3+)
+  bool _criacaoConferida = false;      // ja comparou a criacao do aparelho com a da conta
+  bool _enviandoTudo = false;
 
   @override
   void initState() {
@@ -88,6 +92,7 @@ class _BluetoothTelaState extends State<BluetoothTela> {
     });
     _subLeitura = _ble.leituras.listen((l) {
       if (mounted) setState(() => _ultima = l);
+      _conferirCriacao();
     });
     _carregarConta();
   }
@@ -106,6 +111,62 @@ class _BluetoothTelaState extends State<BluetoothTela> {
   /// Bluetooth; nos antigos, so temos o pedaco do nome ("AgroTM-XXXXXX").
   String? get _serieConectada => _ultima?.serie;
   String get _pedacoDoNome => (_nomeConectado ?? '').replaceFirst(RegExp(prefixoNomeBle, caseSensitive: false), '');
+
+  /// Chave para guardar a configuracao no celular: numero de serie (ou nome).
+  String get _chaveConfig =>
+      (_noAparelho?['serie'] ?? _serieConectada ?? _nomeConectado ?? '').toString();
+
+  /// Preenche os campos com o que foi guardado neste celular para o aparelho
+  /// (ou com o ultimo Wi-Fi usado) e com o que esta gravado no aparelho.
+  Future<void> _preencherCampos() async {
+    _noAparelho = await _ble.lerConfig();
+    final salvo = await ConfigAparelhos.ler(_chaveConfig);
+    if (!mounted) return;
+    setState(() {
+      final ssidAparelho = (_noAparelho?['ssid'] ?? '').toString();
+      _rede.text = salvo.rede.isNotEmpty ? salvo.rede : ssidAparelho;
+      _senhaRede.text = salvo.senha;
+      final srvAparelho = (_noAparelho?['srv'] ?? '').toString();
+      _servidor.text = salvo.servidor.isNotEmpty
+          ? salvo.servidor
+          : (srvAparelho.isNotEmpty ? srvAparelho : servidorParaAparelho(sessao.servidor, comPasta: _ble.servidorComPasta));
+      _chave.text = salvo.chave;
+      final perfilConta = _galpaoDaConta?.perfil;
+      _perfil = perfilConta ?? (_noAparelho?['perfil']?.toString()) ?? salvo.perfil ?? _perfil;
+    });
+  }
+
+  /// Guarda no celular o que esta nos campos (para a proxima conexao).
+  Future<void> _salvarCampos() async {
+    final chave = _chaveConfig;
+    if (chave.isEmpty) return;
+    await ConfigAparelhos.gravar(chave, ConfigAparelho(
+      rede: _rede.text.trim(),
+      senha: _senhaRede.text,
+      servidor: _servidor.text.trim(),
+      chave: _chave.text.trim(),
+      perfil: _perfil,
+      enviadoEm: DateTime.now(),
+    ));
+  }
+
+  /// A criacao foi trocada no site/app enquanto o aparelho estava sem
+  /// internet? Entao manda pelo Bluetooth agora (uma vez por conexao).
+  Future<void> _conferirCriacao() async {
+    final l = _ultima, ap = _galpaoDaConta;
+    if (_criacaoConferida || l == null || ap == null || l.perfil.isEmpty) return;
+    _criacaoConferida = true;
+    if (ap.perfil == l.perfil || !ap.perfilPendente) return;
+    try {
+      await _ble.enviarCriacao(ap.perfil);
+      if (mounted) {
+        setState(() => _perfil = ap.perfil);
+        avisar(context, 'Criação do aparelho atualizada para "${perfilPorId(ap.perfil)?.nome ?? ap.perfil}", como está no site/app.');
+      }
+    } catch (_) {
+      _criacaoConferida = false;   // tenta de novo na proxima leitura
+    }
+  }
 
   /// O galpao da conta que e este aparelho (ou null).
   Aparelho? get _galpaoDaConta {
@@ -174,17 +235,22 @@ class _BluetoothTelaState extends State<BluetoothTela> {
       await AparelhoBle.pararBusca();
       await _ble.conectar(r.device);
       _subConexao?.cancel();
-      _subConexao = _ble.estadoConexao?.listen((s) {
-        if (s == BluetoothConnectionState.disconnected && mounted) {
+      _subConexao = _ble.estadoConexao?.listen((s) async {
+        if (s != BluetoothConnectionState.disconnected) return;
+        // o app tenta reconectar sozinho; so limpa a tela se nao voltar
+        await Future<void>.delayed(const Duration(seconds: 5));
+        if (mounted && !_ble.conectado) {
           setState(() {
             _nomeConectado = null;
             _ultima = null;
+            _erro = 'O aparelho desconectou. Toque em Conectar de novo.';
           });
         }
       });
-      _servidor.text = servidorParaAparelho(sessao.servidor, comPasta: _ble.servidorComPasta);
       if (mounted) setState(() => _nomeConectado = AparelhoBle.nomeDe(r));
-      _carregarConta();
+      _criacaoConferida = false;
+      await _carregarConta();
+      await _preencherCampos();
       _repassadas = 0;
       _statusPonte = null;
       _timerPonte?.cancel();
@@ -251,34 +317,83 @@ class _BluetoothTelaState extends State<BluetoothTela> {
     }
   }
 
-  void _enviarWifi() {
+  String? _problemaWifi() {
     final rede = _rede.text.trim();
-    if (rede.isEmpty) return avisar(context, 'Informe o nome da rede Wi-Fi.');
-    if (rede.contains('|')) return avisar(context, 'O nome da rede não pode ter o caractere "|".');
-    _comando(() => _ble.enviarWifi(rede, _senhaRede.text),
-        'Wi-Fi enviado. O aparelho conecta em alguns segundos (veja o visor).');
+    if (rede.isEmpty) return 'Informe o nome da rede Wi-Fi.';
+    if (rede.contains('|')) return 'O nome da rede não pode ter o caractere "|".';
+    return null;
+  }
+
+  String? _problemaServidor() {
+    final s = _servidor.text.trim();
+    final max = _ble.servidorComPasta ? 96 : 63;
+    if (s.isEmpty || s.length > max) return 'Informe o servidor (até $max caracteres).';
+    if (_chave.text.length > 47) return 'A chave pode ter até 47 caracteres.';
+    return null;
+  }
+
+  void _enviarWifi() {
+    final p = _problemaWifi();
+    if (p != null) return avisar(context, p);
+    _salvarCampos();
+    _comando(() => _ble.enviarWifi(_rede.text.trim(), _senhaRede.text),
+        'Wi-Fi enviado e guardado. O aparelho conecta em alguns segundos (veja o visor).');
   }
 
   void _enviarServidor() {
-    final s = _servidor.text.trim();
-    final max = _ble.servidorComPasta ? 96 : 63;
-    if (s.isEmpty || s.length > max) return avisar(context, 'Informe o servidor (até $max caracteres).');
-    if (_chave.text.length > 47) return avisar(context, 'A chave pode ter até 47 caracteres.');
-    _comando(() => _ble.enviarServidor(s, _chave.text.trim()), 'Servidor enviado ao aparelho.');
+    final p = _problemaServidor();
+    if (p != null) return avisar(context, p);
+    _salvarCampos();
+    _comando(() => _ble.enviarServidor(_servidor.text.trim(), _chave.text.trim()), 'Servidor enviado e guardado.');
+  }
+
+  /// Manda tudo de uma vez: servidor, criacao e por ultimo o Wi-Fi (que pode
+  /// fazer o aparelho desconectar por alguns segundos enquanto conecta).
+  Future<void> _enviarTudo() async {
+    final pw = _problemaWifi();
+    final ps = _ble.temNuvem ? _problemaServidor() : null;
+    if (pw != null || ps != null) return avisar(context, pw ?? ps!);
+    setState(() => _enviandoTudo = true);
+    await _salvarCampos();
+    final feitos = <String>[], falhas = <String>[];
+    Future<void> passo(String nome, Future<void> Function() f) async {
+      try {
+        await f();
+        feitos.add(nome);
+      } catch (e) {
+        falhas.add('$nome (${_textoErro(e)})');
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+    }
+
+    if (_ble.temNuvem) await passo('servidor', () => _ble.enviarServidor(_servidor.text.trim(), _chave.text.trim()));
+    final perfil = _perfil;
+    if (perfil != null) await passo('criação', () => _enviarCriacaoSemAviso(perfil));
+    await passo('Wi-Fi', () => _ble.enviarWifi(_rede.text.trim(), _senhaRede.text));
+    if (!mounted) return;
+    setState(() => _enviandoTudo = false);
+    avisar(context, falhas.isEmpty
+        ? 'Tudo enviado e guardado neste celular: ${feitos.join(', ')}.'
+        : 'Enviado: ${feitos.isEmpty ? 'nada' : feitos.join(', ')}. Falhou: ${falhas.join('; ')}');
   }
 
   /// Troca a criacao no aparelho E na conta (senao o servidor desfaz a troca).
   Future<void> _enviarCriacao() async {
     final perfil = _perfil;
     if (perfil == null) return;
-    await _comando(() => _ble.enviarCriacao(perfil), 'Criação enviada ao aparelho.');
+    _salvarCampos();
+    await _comando(() => _enviarCriacaoSemAviso(perfil), 'Criação enviada ao aparelho e à conta.');
+  }
+
+  Future<void> _enviarCriacaoSemAviso(String perfil) async {
+    await _ble.enviarCriacao(perfil);
     final ap = _galpaoDaConta;
-    if (ap == null) return;   // sem login ou galpao ainda nao cadastrado
+    if (ap == null || ap.perfil == perfil) return;   // sem login, sem galpao ou ja igual
     try {
       await api.trocarCriacao(ap.numeroSerie, perfil);
-      _carregarConta();
+      await _carregarConta();
     } on ApiErro catch (e) {
-      if (mounted) avisar(context, 'Aparelho trocou, mas o servidor não: ${e.mensagem}');
+      throw Exception('o aparelho trocou, mas a conta não: ${e.mensagem}');
     }
   }
 
@@ -469,6 +584,29 @@ class _BluetoothTelaState extends State<BluetoothTela> {
             },
           ),
       ]),
+
+      if (_noAparelho != null)
+        _cartao('Gravado no aparelho', [
+          Text('Wi-Fi: ${(_noAparelho!['ssid'] ?? '').toString().isEmpty ? 'não configurado' : _noAparelho!['ssid']}'),
+          Text('Servidor: ${_noAparelho!['srv'] ?? '—'}', style: const TextStyle(fontSize: 12.5)),
+          Text('Criação: ${perfilPorId((_noAparelho!['perfil'] ?? '').toString())?.nome ?? _noAparelho!['perfil'] ?? '—'}'
+              ' · firmware ${_noAparelho!['fw'] ?? '?'}',
+              style: const TextStyle(fontSize: 12.5, color: Cores.textoSuave)),
+        ]),
+
+      FilledButton.icon(
+        style: FilledButton.styleFrom(minimumSize: const Size.fromHeight(48)),
+        icon: _enviandoTudo
+            ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+            : const Icon(Icons.send_to_mobile),
+        label: const Text('Enviar tudo ao aparelho (Wi-Fi, servidor e criação)'),
+        onPressed: _enviandoTudo ? null : _enviarTudo,
+      ),
+      const Padding(
+        padding: EdgeInsets.only(top: 4, bottom: 8),
+        child: Text('Os dados ficam guardados neste celular e já aparecem preenchidos na próxima conexão.',
+            style: TextStyle(fontSize: 11.5, color: Cores.textoSuave)),
+      ),
 
       // Wi-Fi
       _cartao('Wi-Fi do galpão', [

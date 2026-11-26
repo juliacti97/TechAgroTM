@@ -14,6 +14,7 @@
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
@@ -56,7 +57,7 @@ class HistoricoBle {
 
 class AparelhoBle {
   BluetoothDevice? dispositivo;
-  BluetoothCharacteristic? _leitura, _perfil, _rede, _nuvem, _historico;
+  BluetoothCharacteristic? _leitura, _perfil, _rede, _nuvem, _historico, _config;
   StreamSubscription<List<int>>? _subValor;
 
   /// 'a6e07' (firmware 1.x) ou 'a6207' (firmware 2.0); null se desconectado.
@@ -68,7 +69,10 @@ class AparelhoBle {
   /* ---------------- UUIDs ---------------- */
 
   static final Map<int, Set<Guid>> _uuids = {
-    for (final n in [BleUuids.servico, BleUuids.leitura, BleUuids.perfil, BleUuids.rede, BleUuids.nuvem, BleUuids.historico])
+    for (final n in [
+      BleUuids.servico, BleUuids.leitura, BleUuids.perfil,
+      BleUuids.rede, BleUuids.nuvem, BleUuids.historico, BleUuids.config,
+    ])
       n: {for (final f in BleUuids.familias) Guid(BleUuids.uuid(f, n))},
   };
 
@@ -116,11 +120,46 @@ class AparelhoBle {
 
   /* ---------------- conexao ---------------- */
 
+  /// Conecta com ate 3 tentativas. O ESP32 as vezes derruba a primeira
+  /// conexao (radio ocupado com o Wi-Fi): tentar de novo resolve.
   Future<void> conectar(BluetoothDevice d) async {
+    Object? ultimoErro;
+    for (var tentativa = 1; tentativa <= 3; tentativa++) {
+      try {
+        await _conectarUmaVez(d);
+        return;
+      } catch (e) {
+        ultimoErro = e;
+        if (e.toString().contains('não é um aparelho TECH AGROTM')) rethrow;
+        await desconectar();
+        await Future<void>.delayed(Duration(milliseconds: 800 * tentativa));
+      }
+    }
+    throw Exception('O aparelho não aceitou a conexão depois de 3 tentativas. '
+        'Chegue mais perto, aguarde uns segundos e tente de novo. (${_resumo(ultimoErro)})');
+  }
+
+  static String _resumo(Object? e) {
+    final t = e.toString();
+    if (t.contains('133')) return 'erro 133 do Bluetooth';
+    if (t.contains('disconnected')) return 'o aparelho desconectou';
+    return t.length > 80 ? '${t.substring(0, 80)}…' : t;
+  }
+
+  Future<void> _conectarUmaVez(BluetoothDevice d) async {
     await desconectar();
-    // Uso educacional / sem fins lucrativos (licenca da biblioteca: veja o README)
-    await d.connect(license: License.nonprofit, timeout: const Duration(seconds: 15));
+    // Uso educacional / sem fins lucrativos (licenca da biblioteca: veja o README).
+    // mtu: null = conecta primeiro e pede o pacote maior depois, sem derrubar
+    // a conexao se o aparelho demorar a responder.
+    await d.connect(license: License.nonprofit, timeout: const Duration(seconds: 15), mtu: null);
     dispositivo = d;
+    if (Platform.isAndroid) {
+      try {
+        await d.requestMtu(247);
+      } catch (_) {
+        // segue com o pacote padrao
+      }
+    }
 
     final servicos = await d.discoverServices();
     for (final s in servicos) {
@@ -132,6 +171,7 @@ class AparelhoBle {
         if (_eh(c.uuid, BleUuids.rede)) _rede = c;
         if (_eh(c.uuid, BleUuids.nuvem)) _nuvem = c;
         if (_eh(c.uuid, BleUuids.historico)) _historico = c;
+        if (_eh(c.uuid, BleUuids.config)) _config = c;
       }
     }
     if (_leitura == null || _rede == null) {
@@ -152,6 +192,21 @@ class AparelhoBle {
   Stream<BluetoothConnectionState>? get estadoConexao => dispositivo?.connectionState;
 
   bool get conectado => dispositivo?.isConnected ?? false;
+
+  /// O que esta gravado no aparelho: {"serie","fw","ssid","srv","perfil"}
+  /// (firmware 1.3+; null nos antigos). A senha do Wi-Fi nao vem.
+  Future<Map<String, dynamic>?> lerConfig() async {
+    final c = _config;
+    if (c == null || !conectado) return null;
+    try {
+      final j = jsonDecode(utf8.decode(await c.read()));
+      return j is Map<String, dynamic> ? j : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  bool get temConfig => _config != null;
 
   /// O firmware guarda leituras para o celular buscar? (1.2+)
   bool get temHistorico => _historico != null;
@@ -198,7 +253,7 @@ class AparelhoBle {
     final d = dispositivo;
     dispositivo = null;
     familia = null;
-    _leitura = _perfil = _rede = _nuvem = _historico = null;
+    _leitura = _perfil = _rede = _nuvem = _historico = _config = null;
     if (d != null) {
       try {
         await d.disconnect();
@@ -218,10 +273,26 @@ class AparelhoBle {
 
   /* ---------------- comandos ---------------- */
 
+  /// Escreve no aparelho. Se falhar (erro 133, conexao caiu), reconecta e
+  /// tenta mais uma vez.
   Future<void> _escrever(BluetoothCharacteristic? c, String texto) async {
     if (c == null || !conectado) throw Exception('Aparelho desconectado. Conecte de novo.');
-    await c.write(utf8.encode(texto));
+    final uuid = c.uuid;
+    try {
+      await c.write(utf8.encode(texto));
+    } catch (e) {
+      final d = dispositivo;
+      if (d == null) rethrow;
+      await Future<void>.delayed(const Duration(milliseconds: 600));
+      if (!d.isConnected) await conectar(d);
+      final nova = _todas.firstWhere((x) => x.uuid == uuid, orElse: () => throw e);
+      await nova.write(utf8.encode(texto));
+    }
   }
+
+  List<BluetoothCharacteristic> get _todas =>
+      [_leitura, _perfil, _rede, _nuvem, _historico, _config].whereType<BluetoothCharacteristic>().toList();
+
 
   /// Wi-Fi do galpao. O nome da rede nao pode ter "|" (separador do protocolo).
   Future<void> enviarWifi(String rede, String senha) {
