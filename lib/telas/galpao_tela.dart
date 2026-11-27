@@ -6,6 +6,9 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+
+import '../ble/aparelho_ble.dart';
 
 import '../core/api.dart';
 import '../core/estado.dart';
@@ -101,15 +104,134 @@ class _GalpaoTelaState extends State<GalpaoTela> {
 
   /* ---------------- acoes ---------------- */
 
+  /// Troca a criacao: janela de confirmacao e, se o produtor quiser, envio
+  /// direto ao aparelho pelo Bluetooth (vale na hora, mesmo sem internet nele).
+  /// Pelo servidor, o aparelho recebe no proximo envio (ate 1 min, se online).
   Future<void> _trocarCriacao(String? perfil) async {
-    if (perfil == null || _ap == null || perfil == _ap!.perfil) return;
+    final ap = _ap;
+    if (perfil == null || ap == null || perfil == ap.perfil) return;
+    final de = perfilPorId(ap.perfil), para = perfilPorId(perfil);
+
+    final escolha = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Trocar a criação monitorada?'),
+        content: SingleChildScrollView(
+          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+            _caixaCriacao('Atual', de?.nome ?? ap.perfil, false),
+            const Padding(padding: EdgeInsets.symmetric(vertical: 4), child: Center(child: Icon(Icons.arrow_downward, size: 18))),
+            _caixaCriacao('Nova', para?.nome ?? perfil, true),
+            const SizedBox(height: 12),
+            if (para != null)
+              Text('Faixa ideal nova: ${numero(para.tMin, 0)} a ${numero(para.tMax, 0)} °C e '
+                  '${numero(para.uMin, 0)} a ${numero(para.uMax, 0)} % de umidade. Os alertas passam a usar esta faixa.',
+                  style: const TextStyle(fontSize: 13)),
+            const SizedBox(height: 8),
+            Text(
+              ap.online
+                  ? 'O aparelho está online: ele recebe a nova criação em até 1 minuto.'
+                  : 'O aparelho está sem sinal: a troca fica guardada e ele aplica quando voltar a se conectar. '
+                    'Perto do galpão, use "Enviar pelo Bluetooth" para mandar agora.',
+              style: TextStyle(fontSize: 13, color: ap.online ? Cores.textoSuave : const Color(0xFF8A4308),
+                  fontWeight: ap.online ? FontWeight.normal : FontWeight.w600),
+            ),
+          ]),
+        ),
+        actionsOverflowDirection: VerticalDirection.up,
+        actionsOverflowButtonSpacing: 4,
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancelar')),
+          OutlinedButton.icon(
+            icon: const Icon(Icons.bluetooth, size: 18),
+            label: const Text('Trocar e enviar pelo Bluetooth'),
+            onPressed: () => Navigator.pop(ctx, 'ble'),
+          ),
+          FilledButton(onPressed: () => Navigator.pop(ctx, 'servidor'), child: const Text('Trocar criação')),
+        ],
+      ),
+    );
+    if (escolha == null || !mounted) return;   // cancelou: nada muda
+
     try {
       await api.trocarCriacao(widget.serie, perfil);
-      if (mounted) avisar(context, 'Criação alterada. O aparelho aplica em até 1 minuto.');
-      await _carregarTudo();
     } on ApiErro catch (e) {
       if (mounted) avisar(context, e.mensagem);
+      return;
     }
+    if (escolha == 'ble') {
+      await _enviarCriacaoBluetooth(perfil);
+    } else if (mounted) {
+      avisar(context, ap.online
+          ? 'Criação alterada. O aparelho aplica em até 1 minuto.'
+          : 'Criação alterada. O aparelho aplica quando voltar a se conectar.');
+    }
+    await _carregarTudo();
+  }
+
+  Widget _caixaCriacao(String rotulo, String nome, bool nova) => Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: nova ? const Color(0xFFFDF3E2) : null,
+          border: Border.all(color: nova ? Cores.ambar : Cores.borda),
+        ),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(rotulo.toUpperCase(), style: const TextStyle(fontSize: 10.5, letterSpacing: .5, color: Cores.textoSuave)),
+          Text(nome, style: const TextStyle(fontWeight: FontWeight.w700)),
+        ]),
+      );
+
+  /// Procura ESTE aparelho por perto, conecta, manda a criacao e desconecta.
+  Future<void> _enviarCriacaoBluetooth(String perfil) async {
+    final etapa = ValueNotifier<String>('Procurando o aparelho por perto…');
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => AlertDialog(
+        content: Row(children: [
+          const SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2.5)),
+          const SizedBox(width: 16),
+          Expanded(child: ValueListenableBuilder<String>(valueListenable: etapa, builder: (_, t, __) => Text(t))),
+        ]),
+      ),
+    );
+
+    final ble = AparelhoBle();
+    String resultado;
+    StreamSubscription<List<ScanResult>>? busca;
+    try {
+      if (await FlutterBluePlus.adapterState.first != BluetoothAdapterState.on) {
+        throw Exception('ligue o Bluetooth do celular');
+      }
+      ScanResult? achado;
+      busca = FlutterBluePlus.onScanResults.listen((lista) {
+        for (final r in lista) {
+          if (AparelhoBle.ehTechAgro(r) && AparelhoBle.combina(widget.serie, AparelhoBle.sufixoDe(r))) achado = r;
+        }
+      });
+      await AparelhoBle.procurar(tempo: const Duration(seconds: 12));
+      final limite = DateTime.now().add(const Duration(seconds: 12));
+      while (achado == null && DateTime.now().isBefore(limite)) {
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+      }
+      await AparelhoBle.pararBusca();
+      final r = achado;
+      if (r == null) throw Exception('o aparelho não foi encontrado por perto (até uns 10 metros)');
+      etapa.value = 'Conectando em ${AparelhoBle.nomeDe(r)}…';
+      await ble.conectar(r.device);
+      etapa.value = 'Enviando a criação…';
+      await ble.enviarCriacao(perfil);
+      resultado = 'Criação enviada ao aparelho pelo Bluetooth. O visor mostra "Criação alterada".';
+    } catch (e) {
+      resultado = 'A troca ficou salva na conta, mas não foi pelo Bluetooth: '
+          '${e.toString().replaceFirst('Exception: ', '')}. O aparelho aplica quando se conectar.';
+    } finally {
+      await busca?.cancel();
+      ble.fechar();
+    }
+    if (!mounted) return;
+    Navigator.of(context, rootNavigator: true).pop();   // fecha o "procurando…"
+    avisar(context, resultado);
   }
 
   Future<void> _renomear() async {
@@ -326,8 +448,8 @@ class _GalpaoTelaState extends State<GalpaoTela> {
       if (ap.perfilPendente)
         const Padding(
           padding: EdgeInsets.only(top: 8),
-          child: Text('Aguardando o aparelho aplicar a nova criação (até 1 minuto).',
-              style: TextStyle(fontSize: 12, color: Cores.textoSuave)),
+          child: Text('Aguardando o aparelho aplicar a nova criação (até 1 minuto se estiver online).',
+              style: TextStyle(fontSize: 12, color: Color(0xFF8A4308), fontWeight: FontWeight.w600)),
         ),
     ]);
   }
